@@ -34,6 +34,18 @@ impl Default for MinimumConfirmations {
     }
 }
 
+impl From<NonZeroU64> for MinimumConfirmations {
+    fn from(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<MinimumConfirmations> for NonZeroU64 {
+    fn from(value: MinimumConfirmations) -> Self {
+        value.0
+    }
+}
+
 /// Represents a configuration value for the version of a contract that can be
 /// upgraded. Starts from 1.
 #[derive(
@@ -61,6 +73,7 @@ impl Default for ContractVersion {
 
 /// Represents an Ethereum contract that may be upgraded.
 #[derive(
+    Copy,
     Clone,
     Debug,
     Eq,
@@ -80,6 +93,7 @@ pub struct UpgradeableContract {
 /// Represents all the Ethereum contracts that need to be directly know about by
 /// validators.
 #[derive(
+    Copy,
     Clone,
     Debug,
     Eq,
@@ -101,6 +115,7 @@ pub struct Contracts {
 
 /// Represents chain parameters for the Ethereum bridge.
 #[derive(
+    Copy,
     Clone,
     Debug,
     Eq,
@@ -156,6 +171,61 @@ impl EthereumBridgeConfig {
         vp::init_storage(storage);
         // Initialize the storage for the Bridge Pool VP.
         bridge_pool_vp::init_storage(storage);
+    }
+
+    /// Reads the latest [`EthereumBridgeConfig`] from storage. If it is not
+    /// present, `None` will be returned - this could be the case if the bridge
+    /// has not been bootstrapped yet. Panics if the storage appears to be
+    /// corrupt.
+    // TODO: return an error instead of panicking
+    pub fn read<DB, H>(storage: &Storage<DB, H>) -> Option<Self>
+    where
+        DB: storage::DB + for<'iter> storage::DBIter<'iter>,
+        H: storage::traits::StorageHasher,
+    {
+        let min_confirmations_key = bridge_storage::min_confirmations_key();
+        let native_erc20_key = bridge_storage::native_erc20_key();
+        let bridge_contract_key = bridge_storage::bridge_contract_key();
+        let governance_contract_key = bridge_storage::governance_contract_key();
+
+        let (min_confirmations, _) =
+            storage.read(&min_confirmations_key).unwrap(); // ?: when would `read` return an error here?
+        let min_confirmations = match min_confirmations {
+            Some(bytes) => {
+                MinimumConfirmations::try_from_slice(&bytes).unwrap()
+            }
+            None => return None,
+        };
+        let (native_erc20, _) = storage.read(&native_erc20_key).unwrap();
+        let native_erc20 = match native_erc20 {
+            Some(bytes) => EthAddress::try_from_slice(&bytes).unwrap(),
+            None => panic!(
+                "Ethereum bridge appears to be only partially configured!"
+            ),
+        };
+        let (bridge_contract, _) = storage.read(&bridge_contract_key).unwrap();
+        let bridge_contract = match bridge_contract {
+            Some(bytes) => UpgradeableContract::try_from_slice(&bytes).unwrap(),
+            None => panic!(
+                "Ethereum bridge appears to be only partially configured!"
+            ),
+        };
+        let (governance_contract, _) =
+            storage.read(&governance_contract_key).unwrap();
+        let governance_contract = match governance_contract {
+            Some(bytes) => UpgradeableContract::try_from_slice(&bytes).unwrap(),
+            None => panic!(
+                "Ethereum bridge appears to be only partially configured!"
+            ),
+        };
+        Some(Self {
+            min_confirmations,
+            contracts: Contracts {
+                native_erc20,
+                bridge: bridge_contract,
+                governance: governance_contract,
+            },
+        })
     }
 }
 
