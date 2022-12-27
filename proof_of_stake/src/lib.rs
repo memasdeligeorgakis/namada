@@ -3081,3 +3081,40 @@ pub fn credit_tokens_new<S>(
         .write(&key, encode(&new_balance))
         .expect("Unable to write token balance for PoS system");
 }
+
+/// NEW: Get the total bond amount for a given bond ID at a given epoch
+pub fn bond_amount_new<S>(
+    storage: &S,
+    params: &PosParams,
+    bond_id: &BondId,
+    epoch: Epoch,
+) -> storage_api::Result<token::Amount>
+where
+    S: for<'iter> StorageRead<'iter>,
+{
+    // TODO: review this logic carefully, do cubic slashing, apply rewards
+    let slashes = validator_slashes_handle(&bond_id.validator);
+    let bonds = bond_handle(&bond_id.source, &bond_id.validator, true)
+        .get_data_handler();
+    let mut total = token::Amount::default();
+    for next in bonds.iter(storage)? {
+        let (bond_epoch, delta) = next?;
+        if bond_epoch > epoch {
+            break;
+        }
+        for slash in slashes.iter(storage)? {
+            let SlashNew {
+                epoch: slash_epoch,
+                block_height: _,
+                r#type: slash_type,
+            } = slash?;
+            if slash_epoch > bond_epoch {
+                continue;
+            }
+            let current_slashed =
+                decimal_mult_i128(slash_type.get_slash_rate(params), delta);
+            total += token::Amount::from_change(delta - current_slashed);
+        }
+    }
+    Ok(total)
+}
