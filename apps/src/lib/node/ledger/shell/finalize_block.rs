@@ -1,5 +1,6 @@
 //! Implementation of the `FinalizeBlock` ABCI++ method for the Shell
 
+use namada::ledger::pos::namada_proof_of_stake;
 use namada::ledger::pos::types::into_tm_voting_power;
 use namada::ledger::protocol;
 use namada::types::storage::{BlockHash, BlockResults, Header};
@@ -293,36 +294,44 @@ where
     fn update_epoch(&self, response: &mut shim::response::FinalizeBlock) {
         // Apply validator set update
         let (current_epoch, _gas) = self.storage.get_current_epoch();
-        let pos_params = self.storage.read_pos_params();
+        let pos_params =
+            namada_proof_of_stake::read_pos_params(&self.storage).unwrap();
         // TODO ABCI validator updates on block H affects the validator set
         // on block H+2, do we need to update a block earlier?
-        self.storage.validator_set_update(current_epoch, |update| {
-            let (consensus_key, power) = match update {
-                ValidatorSetUpdate::Active(ActiveValidator {
-                    consensus_key,
-                    bonded_stake,
-                }) => {
-                    let power: i64 = into_tm_voting_power(
-                        pos_params.tm_votes_per_token,
+
+        // self.storage.validator_set_update(current_epoch, |update| {
+        namada_proof_of_stake::validator_set_update_tendermint(
+            &self.storage,
+            &pos_params,
+            current_epoch,
+            |update| {
+                let (consensus_key, power) = match update {
+                    ValidatorSetUpdate::Active(ActiveValidator {
+                        consensus_key,
                         bonded_stake,
-                    );
-                    (consensus_key, power)
-                }
-                ValidatorSetUpdate::Deactivated(consensus_key) => {
-                    // Any validators that have become inactive must
-                    // have voting power set to 0 to remove them from
-                    // the active set
-                    let power = 0_i64;
-                    (consensus_key, power)
-                }
-            };
-            let pub_key = TendermintPublicKey {
-                sum: Some(key_to_tendermint(&consensus_key).unwrap()),
-            };
-            let pub_key = Some(pub_key);
-            let update = ValidatorUpdate { pub_key, power };
-            response.validator_updates.push(update);
-        });
+                    }) => {
+                        let power: i64 = into_tm_voting_power(
+                            pos_params.tm_votes_per_token,
+                            bonded_stake,
+                        );
+                        (consensus_key, power)
+                    }
+                    ValidatorSetUpdate::Deactivated(consensus_key) => {
+                        // Any validators that have become inactive must
+                        // have voting power set to 0 to remove them from
+                        // the active set
+                        let power = 0_i64;
+                        (consensus_key, power)
+                    }
+                };
+                let pub_key = TendermintPublicKey {
+                    sum: Some(key_to_tendermint(&consensus_key).unwrap()),
+                };
+                let pub_key = Some(pub_key);
+                let update = ValidatorUpdate { pub_key, power };
+                response.validator_updates.push(update);
+            },
+        );
     }
 }
 
