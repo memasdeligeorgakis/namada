@@ -51,6 +51,10 @@ where
                 execute_governance_proposals(self, &mut response)?;
         }
 
+        if !req.votes.is_empty() {
+            dbg!(&req.votes);
+        }
+
         // Tracks the accepted transactions
         self.storage.block.results = BlockResults::default();
         for (tx_index, processed_tx) in req.txs.iter().enumerate() {
