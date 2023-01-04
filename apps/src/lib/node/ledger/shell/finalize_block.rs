@@ -11,6 +11,7 @@ use super::governance::execute_governance_proposals;
 use super::*;
 use crate::facade::tendermint_proto::abci::Misbehavior as Evidence;
 use crate::facade::tendermint_proto::crypto::PublicKey as TendermintPublicKey;
+use crate::node::ledger::shell::stats::InternalStats;
 
 impl<D, H> Shell<D, H>
 where
@@ -55,6 +56,7 @@ where
         }
 
         let wrapper_fees = self.get_wrapper_tx_fees();
+        let mut stats = InternalStats::default();
 
         // Tracks the accepted transactions
         self.storage.block.results = BlockResults::default();
@@ -272,6 +274,7 @@ where
                             tx_event["hash"],
                             result
                         );
+                        stats.increment_successful_txs();
                         self.write_log.commit_tx();
                         if !tx_event.contains_key("code") {
                             tx_event["code"] = ErrorCodes::Ok.into();
@@ -304,6 +307,7 @@ where
                             tx_event["hash"],
                             result.vps_result.rejected_vps
                         );
+                        stats.increment_rejected_txs();
                         self.write_log.drop_tx();
                         tx_event["code"] = ErrorCodes::InvalidTx.into();
                     }
@@ -316,6 +320,7 @@ where
                         tx_event["hash"],
                         msg
                     );
+                    stats.increment_errored_txs();
                     self.write_log.drop_tx();
                     tx_event["gas_used"] = self
                         .gas_meter
@@ -327,11 +332,17 @@ where
             }
             response.events.push(tx_event);
         }
-        tracing::info!(
-            "Applied {} txs at height {}",
-            response.events.len(),
-            self.storage.last_height
+
+        stats.set_tx_cache_size(
+            self.tx_wasm_cache.get_size(),
+            self.tx_wasm_cache.get_cache_size(),
         );
+        stats.set_vp_cache_size(
+            self.vp_wasm_cache.get_size(),
+            self.vp_wasm_cache.get_cache_size(),
+        );
+
+        tracing::info!("{}", stats);
 
         if new_epoch {
             self.update_epoch(&mut response);
