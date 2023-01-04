@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use namada::core::ledger::replay_protection;
 use namada::ledger::events::log::EventLog;
 use namada::ledger::events::Event;
 use namada::ledger::gas::BlockGasMeter;
@@ -568,19 +569,84 @@ where
     /// Validate a transaction request. On success, the transaction will
     /// included in the mempool and propagated to peers, otherwise it will be
     /// rejected.
+    ///
+    /// Error codes:
+    /// 1 - Tx format
+    /// 2 - Wrapper Tx signature
+    /// 3 - Tx type
+    /// 4 - wrapper tx hash
+    /// 5 - inner tx hash
     pub fn mempool_validate(
         &self,
         tx_bytes: &[u8],
         r#_type: MempoolTxType,
     ) -> response::CheckTx {
         let mut response = response::CheckTx::default();
-        match Tx::try_from(tx_bytes).map_err(Error::TxDecoding) {
-            Ok(_) => response.log = String::from("Mempool validation passed"),
+
+        // Tx format check
+        let tx = match Tx::try_from(tx_bytes).map_err(Error::TxDecoding) {
+            Ok(t) => t,
             Err(msg) => {
                 response.code = 1;
                 response.log = msg.to_string();
+                return response;
             }
+        };
+
+        // Tx signature check
+        let tx_type = match process_tx(tx) {
+            Ok(ty) => ty,
+            Err(msg) => {
+                response.code = 2;
+                response.log = msg.to_string();
+                return response;
+            }
+        };
+
+        // Tx type check
+        if let TxType::Wrapper(wrapper) = tx_type {
+            // Replay protection check
+            let inner_hash_key =
+                replay_protection::get_tx_hash_key(&wrapper.tx_hash);
+            match self.storage.has_key(&inner_hash_key) {
+                Ok((found, _)) => {
+                    if found {
+                        response.code = 4;
+                        response.log = "Wrapper transaction hash already in storage, replay attempt".to_string();
+                        return response;
+                    }
+                }
+                Err(msg) => {
+                    response.code = 4;
+                    response.log = msg.to_string();
+                    return response;
+                }
+            }
+
+            let wrapper_hash_key =
+                replay_protection::get_tx_hash_key(&hash_tx(tx_bytes));
+            match self.storage.has_key(&wrapper_hash_key) {
+                Ok((found, _)) => {
+                    if found {
+                        response.code = 5;
+                        response.log = "Inner transaction hash already in storage, replay attempt".to_string();
+                        return response;
+                    }
+                }
+                Err(msg) => {
+                    response.code = 5;
+                    response.log = msg.to_string();
+                    return response;
+                }
+            }
+        } else {
+            response.code = 3;
+            response.log = "Unsupported tx type".to_string();
+            return response;
         }
+
+        response.log = "Mempool validation passed".to_string();
+
         response
     }
 
